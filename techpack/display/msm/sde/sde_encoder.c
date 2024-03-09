@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -4400,6 +4401,46 @@ bool sde_encoder_check_curr_mode(struct drm_encoder *drm_enc, u32 mode)
 	return (disp_info->curr_panel_mode == mode);
 }
 
+void sde_encoder_trigger_rsc_state_change(struct drm_encoder *drm_enc)
+{
+	struct sde_encoder_virt *sde_enc = NULL;
+	int ret = 0;
+
+	sde_enc = to_sde_encoder_virt(drm_enc);
+
+	if (!sde_enc)
+		return;
+
+	mutex_lock(&sde_enc->rc_lock);
+	/*
+	 * In dual display case when secondary comes out of
+	 * idle make sure RSC solver mode is disabled before
+	 * setting CTL_PREPARE.
+	 */
+	if (!sde_enc->cur_master ||
+		!sde_encoder_check_curr_mode(drm_enc, MSM_DISPLAY_CMD_MODE) ||
+		sde_enc->disp_info.display_type == SDE_CONNECTOR_PRIMARY ||
+		sde_enc->rc_state != SDE_ENC_RC_STATE_IDLE)
+		goto end;
+
+	/* enable all the clks and resources */
+	ret = _sde_encoder_resource_control_helper(drm_enc, true);
+	if (ret) {
+		SDE_ERROR_ENC(sde_enc, "rc in state %d\n", sde_enc->rc_state);
+		SDE_EVT32(DRMID(drm_enc), sde_enc->rc_state, SDE_EVTLOG_ERROR);
+		goto end;
+	}
+
+	_sde_encoder_update_rsc_client(drm_enc, true);
+
+	SDE_EVT32(DRMID(drm_enc), sde_enc->rc_state, SDE_ENC_RC_STATE_ON);
+	sde_enc->rc_state = SDE_ENC_RC_STATE_ON;
+
+end:
+	mutex_unlock(&sde_enc->rc_lock);
+}
+
+
 void sde_encoder_trigger_kickoff_pending(struct drm_encoder *drm_enc)
 {
 	struct sde_encoder_virt *sde_enc;
@@ -4986,10 +5027,10 @@ void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)
 	struct sde_encoder_phys *phys;
 	ktime_t wakeup_time;
 	unsigned int i;
-#ifdef CONFIG_TARGET_PROJECT_K7T
+// #ifdef CONFIG_TARGET_PROJECT_K7T
 	struct sde_connector *sde_conn;
 	struct dsi_display *display;
-#endif
+// #endif
 
 	if (!drm_enc) {
 		SDE_ERROR("invalid encoder\n");
@@ -4998,14 +5039,14 @@ void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)
 	SDE_ATRACE_BEGIN("encoder_kickoff");
 	sde_enc = to_sde_encoder_virt(drm_enc);
 
-#ifdef CONFIG_TARGET_PROJECT_K7T
+// #ifdef CONFIG_TARGET_PROJECT_K7T
 	sde_conn = to_sde_connector(sde_enc->cur_master->connector);
         if (!sde_conn)
 		SDE_ERROR("fps sde_encoder_kickoff sde_conn is null\n");
 	display = sde_conn->display;
         if (!display)
 		SDE_ERROR("fps sde_encoder_kickoff display is null\n");
-#endif
+// #endif
 
 	SDE_DEBUG_ENC(sde_enc, "\n");
 
@@ -5017,6 +5058,14 @@ void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)
 	if (display->panel->panel_initialized &&
 			display->panel->cur_mode->timing.refresh_rate == 60 &&
 			(display->panel->dsi_refresh_flag == 90)) {
+		dsi_set_backlight_control(display->panel, display->panel->cur_mode);
+	}
+#endif
+
+#ifdef CONFIG_TARGET_PROJECT_C3Q
+	if (display->panel->panel_initialized &&
+			display->panel->cur_mode->timing.refresh_rate == 60 &&
+			(display->panel->dsi_refresh_flag > 60)) {
 		dsi_set_backlight_control(display->panel, display->panel->cur_mode);
 	}
 #endif
